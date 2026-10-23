@@ -90,8 +90,40 @@ class YieldCurve(Model):
         """Write raw DF derivatives into component-ordered blocks in place."""
         # TODO 2: Follow the reference chain recursively and apply the product rule.
         # Use the model helpers; scale the new contribution and overwrite or accumulate.
-        raise NotImplementedError("TODO 2")
+        self.resize_gradient(gradient_vector)
 
+        if not accumulate:
+            for block in gradient_vector:
+                block.fill(0.0)
+
+        def add_component_gradient(target, scale):
+            component = self.retrieve_model_component(target)
+            block_index = self.retrieve_model_component_index(target)
+
+            local_df = component.discount_factor(expiry_date)
+            reference_index = getattr(
+                component.component_identifier, "reference_index", None
+            )
+
+            reference_df = 1.0
+            if reference_index is not None:
+                reference_df = self.discount_factor(
+                    reference_index, expiry_date
+                )
+
+            component.discount_factor_gradient_wrt_state(
+                expiry_date, 
+                gradient_vector[block_index],
+                scaler=scale * reference_df,
+                accumulate=True,
+            )
+
+            if reference_index is not None:
+                add_component_gradient(
+                    reference_index, scale * local_df
+                )
+
+        add_component_gradient(index, scaler)
 
 class YieldCurveModelComponent(ModelComponent):
 
@@ -162,7 +194,23 @@ class YieldCurveModelComponent(ModelComponent):
         """Write raw local DF derivatives into the supplied array in place."""
         # TODO 1: Calculate the local DF gradient using the interpolator's integral gradient.
         # Apply scaler to the new contribution; overwrite or add according to accumulate.
-        raise NotImplementedError("TODO 1")
+        discount_factor = self.discount_factor(expiry_date)
+        time_to_expiry = accrued(self.value_date, expiry_date)
+
+        integral_gradient = (
+            self.state_data_interpolator
+            .gradient_of_integrated_value_wrt_ordinate(
+                0.0, time_to_expiry
+            )
+        )
+
+        contribution = -scaler * discount_factor * integral_gradient
+
+        if accumulate:
+            gradient_vector[:] += contribution
+        else:
+            gradient_vector[:] = contribution
+        
 
 
 ModelDeserializerRegistry().register(YieldCurve._model_type.to_string(), YieldCurve.deserialize)
